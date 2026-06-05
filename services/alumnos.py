@@ -25,35 +25,15 @@ def importar_alumnas():
             if not nombre:
                 continue
 
-            # =========================
-            # BUSCAR EXISTENTE
-            # =========================
+            # 🔥 UPSERT REAL (UNA SOLA LÓGICA)
             cursor.execute("""
-                SELECT id FROM alumnos
-                WHERE nombre = ?
-            """, (nombre,))
-
-            existe = cursor.fetchone()
-
-            # =========================
-            # SI EXISTE → REACTIVAR
-            # =========================
-            if existe:
-                cursor.execute("""
-                    UPDATE alumnos
-                    SET activo = 1,
-                        dia_clase = COALESCE(?, dia_clase)
-                    WHERE id = ?
-                """, (dia, existe[0]))
-
-            # =========================
-            # SI NO EXISTE → INSERTAR
-            # =========================
-            else:
-                cursor.execute("""
-                    INSERT INTO alumnos (nombre, dia_clase, activo)
-                    VALUES (?, ?, 1)
-                """, (nombre, dia))
+                INSERT INTO alumnos (nombre, dia_clase, activo)
+                VALUES (?, ?, 1)
+                ON CONFLICT(nombre, dia_clase)
+                DO UPDATE SET
+                    activo = 1,
+                    dia_clase = excluded.dia_clase
+            """, (nombre, dia))
 
         conn.commit()
 
