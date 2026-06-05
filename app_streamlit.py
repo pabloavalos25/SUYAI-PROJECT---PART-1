@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 from database.db import get_connection
-from services.deudas import deuda_total, deuda_cuotas, deuda_materiales, deuda_detallada
+from services.deudas import deuda_detallada
 from services.movimientos import registrar_pago, registrar_material
 from services.historial import obtener_historial
 from services.horno import registrar_horno
@@ -34,6 +34,9 @@ if "horno_toggle" not in st.session_state:
 
 if "alumno_select_prev" not in st.session_state:
     st.session_state.alumno_select_prev = "Ninguno"
+
+if "filtro_alumnos" not in st.session_state:
+    st.session_state.filtro_alumnos = "Activos"
 
 
 # =========================
@@ -67,9 +70,6 @@ def login():
             st.error("Credenciales inválidas")
 
 
-# =========================
-# LOGIN BLOCK
-# =========================
 if not st.session_state.logged:
     login()
     st.stop()
@@ -81,10 +81,11 @@ if not st.session_state.logged:
 conn = get_connection()
 cursor = conn.cursor()
 
-cursor.execute("SELECT id, nombre FROM alumnos WHERE activo=1 ORDER BY nombre")
-alumnos = cursor.fetchall()
+cursor.execute("SELECT id, nombre, activo FROM alumnos ORDER BY nombre")
+alumnos_all = cursor.fetchall()
 
-dict_alumnos = {nombre: aid for aid, nombre in alumnos}
+alumnos_activos = [(i, n) for i, n, a in alumnos_all if a == 1]
+alumnos_inactivos = [(i, n) for i, n, a in alumnos_all if a == 0]
 
 
 # =========================
@@ -92,7 +93,7 @@ dict_alumnos = {nombre: aid for aid, nombre in alumnos}
 # =========================
 st.sidebar.title("Navegación")
 
-if st.sidebar.button("🏠 Dashboard"):
+if st.sidebar.button("Home"):
     st.session_state.view = "dashboard"
     st.session_state.alumno_id = None
     st.session_state.alumno_nombre = None
@@ -100,24 +101,30 @@ if st.sidebar.button("🏠 Dashboard"):
 
 st.sidebar.divider()
 
-
 alumno_select = st.sidebar.selectbox(
     "👤 Ver alumno",
-    ["Ninguno"] + [a[1] for a in alumnos],
+    ["Ninguno"] + [a[1] for a in alumnos_activos],
     key="alumno_select"
 )
 
 if alumno_select != st.session_state.alumno_select_prev:
     st.session_state.alumno_select_prev = alumno_select
 
-    if alumno_select != "Ninguno":
-        alumno_id = dict_alumnos.get(alumno_select)
-
-        if alumno_id:
+    for a in alumnos_activos:
+        if alumno_select == a[1]:
             st.session_state.view = "alumno"
-            st.session_state.alumno_id = alumno_id
-            st.session_state.alumno_nombre = alumno_select
+            st.session_state.alumno_id = a[0]
+            st.session_state.alumno_nombre = a[1]
             st.rerun()
+
+
+st.sidebar.divider()
+st.sidebar.write("🔎 Filtro dashboard")
+filtro = st.sidebar.selectbox(
+    "Estado alumnos",
+    ["Activos", "Inactivos", "Todos"],
+    key="filtro_alumnos"
+)
 
 
 # =========================
@@ -143,50 +150,108 @@ if st.session_state.view == "dashboard":
     c1, c2, c3 = st.columns(3)
 
     cursor.execute("SELECT COALESCE(SUM(monto),0) FROM pagos")
-    c1.metric("Pagos", cursor.fetchone()[0])
+    c1.metric("Pagos", f"${cursor.fetchone()[0]}")
 
     cursor.execute("SELECT COALESCE(SUM(monto),0) FROM materiales")
-    c2.metric("Materiales", cursor.fetchone()[0])
+    c2.metric("Materiales", f"${cursor.fetchone()[0]}")
 
     cursor.execute("SELECT COUNT(*) FROM cuotas WHERE estado='PENDIENTE'")
-    c3.metric("Cuotas pendientes", cursor.fetchone()[0])
+    c3.metric("Cuotas pendientes", f"${cursor.fetchone()[0]}")
 
     st.divider()
 
-    st.subheader("Alumnos")
+    # =========================
+    # AGREGAR ALUMNO
+    # =========================
+    st.subheader("Gestión alumnos")
 
-    for alumno_id, nombre in alumnos:
+    with st.expander("➕ Agregar alumno"):
 
+        col1, col2 = st.columns(2)
+        nombre = col1.text_input("Nombre")
+        apellido = col2.text_input("Apellido")
+
+        if st.button("Crear alumno"):
+            if nombre.strip() and apellido.strip():
+
+                nombre_completo = f"{nombre.strip().title()} {apellido.strip().title()}"
+
+                conn2 = get_connection()
+                cur2 = conn2.cursor()
+
+                cur2.execute("SELECT id FROM alumnos WHERE nombre=?", (nombre_completo,))
+                existe = cur2.fetchone()
+
+                if existe:
+                    st.warning("El alumno ya existe")
+                else:
+                    cur2.execute("""
+                        INSERT INTO alumnos (nombre, dia_clase, activo)
+                        VALUES (?, ?, 1)
+                    """, (nombre_completo, "Sin asignar"))
+
+                    conn2.commit()
+                    st.success("Alumno creado")
+                    st.rerun()
+
+                conn2.close()
+            else:
+                st.error("Completa nombre y apellido")
+
+    st.divider()
+
+
+    # =========================
+    # LISTADOS
+    # =========================
+    def render_alumno(alumno_id, nombre):
         data = deuda_detallada(alumno_id)
 
-        cuota = data["cuota"]
-        material = data["material"]
-        horno = data["horno"]
-        total = data["total"]
+        st.markdown(f"""
+        <div style="
+            padding:12px;
+            border-radius:10px;
+            background:#111827;
+            margin-bottom:10px;
+            color:white;
+        ">
+            <h4>{nombre}</h4>
+            <p>
+                Cuotas: <b>${data["cuota"]}</b><br>
+                Materiales: <b>${data["material"]}</b><br>
+                Horno: <b>${data["horno"]}</b><br>
+                Total: <b>${data["total"]}</b>
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
-        with st.container():
-            st.markdown(f"""
-                <div style="
-                    padding:12px;
-                    border-radius:10px;
-                    background:#111827;
-                    margin-bottom:10px;
-                    color:white;
-                ">
-                    <h4>{nombre}</h4>
-                    <p>
-                        💳 Cuotas: <b>${cuota}</b><br>
-                        🧱 Materiales: <b>${material}</b><br>
-                        🔥 Horno: <b>${horno}</b><br>
-                        💰 Total: <b>${total}</b>
-                    </p>
-                </div>
-            """, unsafe_allow_html=True)
+        if st.button(f"Ver {nombre}", key=f"view_{alumno_id}"):
+            st.session_state.view = "alumno"
+            st.session_state.alumno_id = alumno_id
+            st.session_state.alumno_nombre = nombre
+            st.rerun()
 
-            if st.button(f"Ver {nombre}", key=f"view_{alumno_id}"):
-                st.session_state.view = "alumno"
-                st.session_state.alumno_id = alumno_id
-                st.session_state.alumno_nombre = nombre
+
+    if filtro in ["Activos", "Todos"]:
+        st.subheader("🟢 Alumnos activos")
+        for a in alumnos_activos:
+            render_alumno(a[0], a[1])
+
+    if filtro in ["Inactivos", "Todos"]:
+        st.subheader("🔴 Alumnos inactivos")
+
+        for alumno_id, nombre in alumnos_inactivos:
+            col1, col2 = st.columns([3,1])
+            col1.write(nombre)
+
+            if col2.button("Reactivar", key=f"react_{alumno_id}"):
+                conn2 = get_connection()
+                cur2 = conn2.cursor()
+                cur2.execute("UPDATE alumnos SET activo=1 WHERE id=?", (alumno_id,))
+                conn2.commit()
+                conn2.close()
+
+                st.success("Alumno reactivado")
                 st.rerun()
 
 
@@ -214,54 +279,23 @@ elif st.session_state.view == "alumno":
 
     data = deuda_detallada(alumno_id)
 
-    cuota = data["cuota"]
-    material = data["material"]
-    horno_base = data["horno"]
+    st.metric("Cuotas", f"${data['cuota']}")
+    st.metric("Materiales", f"${data['material']}")
+    st.metric("Horno", f"${data['horno']}")
+    st.metric("Total", f"${data['total']}")
 
-    horno = 25000 if st.session_state.horno_toggle else 0
-    total = cuota + material + horno
+    st.checkbox("Incluir horno ($25.000)", key="horno_toggle")
 
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("Cuotas", f"${cuota}")
-    col2.metric("Materiales", f"${material}")
-    col3.metric("Total", f"${total}")
-
-    st.checkbox("🔥 Incluir horno ($25.000)", key="horno_toggle")
-
-    st.button("➕ Agregar horno", on_click=lambda: (
-        registrar_horno(alumno_id, 25000),
+    if st.button("Agregar horno"):
+        registrar_horno(alumno_id, 25000)
+        st.success("Horno agregado")
         st.rerun()
-    ))
-
-    st.divider()
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("💳 Pago")
-        monto = st.number_input("Monto pago", min_value=0, step=1000)
-        medio = st.selectbox("Medio", ["Efectivo", "Transferencia", "Tarjeta"])
-
-        if st.button("Confirmar pago"):
-            registrar_pago(alumno_id, monto, medio)
-            st.rerun()
-
-    with col2:
-        st.subheader("🧱 Materiales")
-        desc = st.text_input("Descripción")
-        monto_mat = st.number_input("Monto material", min_value=0, step=1000)
-
-        if st.button("Agregar material"):
-            registrar_material(alumno_id, desc, monto_mat)
-            st.rerun()
 
     st.divider()
 
     st.subheader("Historial")
-
-    historial = obtener_historial(alumno_id)
-    df = pd.DataFrame(historial, columns=["Fecha", "Tipo", "Detalle", "Monto"])
+    df = pd.DataFrame(obtener_historial(alumno_id),
+                    columns=["Fecha", "Tipo", "Detalle", "Monto"])
     st.dataframe(df, use_container_width=True)
 
 
